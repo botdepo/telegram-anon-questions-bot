@@ -16,7 +16,7 @@ import os
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 
 import storage
@@ -24,6 +24,15 @@ import storage
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 dp = Dispatcher()
+
+DEFAULT_WELCOME = (
+    "Привет! Напишите свой вопрос — он придёт анонимно, никто не узнает, что это вы. "
+    "Когда ответят, ответ придёт сюда."
+)
+
+
+def welcome_text() -> str:
+    return storage.get("welcome") or DEFAULT_WELCOME
 
 
 async def is_owner(event: Message | CallbackQuery) -> bool:
@@ -42,13 +51,24 @@ async def start(message: Message, bot: Bot) -> None:
             "Чтобы ответить — нажмите на вопрос → «Ответить» и напишите ответ (можно фото или голосовое).\n"
             "/ban — ответом на вопрос: больше не принимать сообщения от этого автора.\n"
             "/unban — снять все блокировки.\n"
-            "/stats — сколько вопросов пришло."
+            "/stats — сколько вопросов пришло.\n"
+            "/welcome текст — своё приветствие для тех, кто откроет бота."
         )
         return
-    await message.answer(
-        "Привет! Напишите свой вопрос — он придёт анонимно, никто не узнает, что это вы. "
-        "Когда ответят, ответ придёт сюда."
-    )
+    await message.answer(welcome_text())
+
+
+@dp.message(Command("welcome"), is_owner)
+async def welcome(message: Message, command: CommandObject) -> None:
+    if not command.args:
+        await message.answer(
+            "Напишите текст сразу после команды, например:\n"
+            "/welcome Спрашивай что угодно — я не узнаю, кто ты\n\n"
+            f"Сейчас гостей встречает:\n{welcome_text()}"
+        )
+        return
+    storage.put("welcome", command.args)
+    await message.answer(f"Готово. Так бот встретит гостей:\n\n{command.args}")
 
 
 @dp.message(Command("ban"), is_owner)
