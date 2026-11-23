@@ -38,14 +38,21 @@ def put(key: str, value: str) -> None:
 
 
 def claim_owner(user_id: int) -> bool:
-    """Первый, кто написал /start, становится владельцем. True — если это он."""
-    if get("owner_id") is None:
+    if owner_id() is None:
         put("owner_id", str(user_id))
-    return get("owner_id") == str(user_id)
+    return owner_id() == user_id
 
 
 def owner_id() -> int | None:
-    value = get("owner_id")
+    configured = os.getenv("OWNER_ID")
+    if configured is not None and (not configured.isascii() or not configured.isdigit() or int(configured) <= 0):
+        raise ValueError("OWNER_ID must be a positive Telegram user id")
+    stored = get("owner_id")
+    if configured and stored not in (None, configured):
+        raise ValueError("Stored owner differs from OWNER_ID; refusing reassignment")
+    if configured and stored is None:
+        put("owner_id", configured)
+    value = configured or stored
     return int(value) if value else None
 
 
