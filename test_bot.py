@@ -5,6 +5,9 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from aiogram import Bot
+from aiogram.client.session.base import BaseSession
+from aiogram.types import MessageId, Update, User
 
 _data = tempfile.TemporaryDirectory()
 os.environ["DATA_DIR"] = _data.name
@@ -36,6 +39,39 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Вы владелец", guest.answer.call_args.args[0])
         self.assertFalse(storage.claim_owner(456))
         self.assertTrue(storage.claim_owner(123))
+
+    async def test_real_dispatcher_routes_private_updates_and_keyboard(self):
+        calls = []
+        class LocalSession(BaseSession):
+            async def close(self): pass
+            async def stream_content(self, *args, **kwargs):
+                if False: yield b""
+            async def make_request(self, bot, method, timeout=None):
+                calls.append(method)
+                if method.__api_method__ == "getMe":
+                    return User(id=11111, is_bot=True, first_name="Fixture", username="fixture_bot")
+                if method.__api_method__ == "copyMessage": return MessageId(message_id=88)
+                return True
+        bot = Bot("11111:" + "F" * 35, session=LocalSession())
+        def msg(who, text, mid, **extra):
+            return {"message_id": mid, "date": 1800000000, "chat": {"id": who, "type": "private"},
+                    "from": {"id": who, "first_name": "Fixture", "is_bot": False}, "text": text, **extra}
+        async def feed(index, **payload):
+            return await main.dp.feed_update(bot, Update.model_validate({"update_id": index, **payload}, context={"bot": bot}))
+        await feed(1, message=msg(456, "/start", 1))
+        self.assertEqual(calls[-1].text, main.DEFAULT_WELCOME)
+        await feed(2, message=msg(123, "/start", 2))
+        self.assertIn("Вы владелец", calls[-1].text)
+        self.assertIsNotNone(calls[-1].reply_markup)
+        await feed(3, callback_query={"id": "q", "chat_instance": "c", "from": msg(123, "", 3)["from"],
+                                       "message": msg(123, "Настройки", 3), "data": "owner:welcome"})
+        await feed(4, message=msg(123, "Спросите про музыку", 4))
+        await feed(5, message=msg(456, "/start", 5))
+        self.assertEqual(calls[-1].text, "Спросите про музыку")
+        await feed(6, message=msg(456, "Вопрос", 6))
+        await feed(7, message=msg(123, "Ответ", 7, reply_to_message=msg(123, "Вопрос", 88)))
+        routes = [(c.from_chat_id, c.chat_id) for c in calls if c.__api_method__ == "copyMessage"]
+        self.assertEqual(routes, [(456, 123), (123, 456)])
 
     async def test_question_is_copied_without_forwarding_and_reply_reaches_guest(self):
         guest, bot = message(), AsyncMock()
