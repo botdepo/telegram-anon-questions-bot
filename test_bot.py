@@ -82,7 +82,15 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(storage.question_count(), 1)
         owner = message(123, "Ответ")
         owner.reply_to_message = SimpleNamespace(message_id=70)
-        await main.answer(owner, bot)
+        with unittest.mock.patch.dict(os.environ, {"BOTDEPO_MEASURE_REPLY": "1"}):
+            flag = storage.DATA_DIR / ".first-answer-delivered"
+            from aiogram.exceptions import TelegramBadRequest
+            bot.copy_message.side_effect = TelegramBadRequest(method=None, message="blocked")
+            await main.answer(owner, bot)
+            self.assertFalse(flag.exists())
+            bot.copy_message.side_effect = None
+            await main.answer(owner, bot)
+            self.assertEqual(flag.read_bytes(), b"")
         self.assertEqual(bot.copy_message.call_args.args, (456, 123, 10))
 
     async def test_rate_limit_and_ban_prevent_repeated_delivery(self):

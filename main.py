@@ -150,6 +150,14 @@ async def answer(message: Message, bot: Bot) -> None:
     except TelegramAPIError:
         await message.answer("Не получилось доставить: автор, похоже, заблокировал бота.")
         return
+    # Only a delivery flag for the hosted pilot. No sender, content or message IDs.
+    if os.getenv("BOTDEPO_MEASURE_REPLY") == "1":
+        try:
+            (storage.DATA_DIR / ".first-answer-delivered").touch(exist_ok=False)
+        except FileExistsError:
+            pass
+        except OSError:
+            logging.warning("Could not record delivery flag")
     await message.answer("Отправил ответ.")
 
 
