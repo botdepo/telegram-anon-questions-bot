@@ -1,12 +1,14 @@
-"""Хранилище в SQLite: владелец, связь «вопрос у владельца → автор», блокировки.
+"""SQLite: владелец, маршруты ответов, блокировки и тематические сборы.
 
 На botdepo писать на диск можно только в /data — эта папка переживает
 перезапуски и передеплои. Остальная файловая система только для чтения.
 Локально (где /data нет) база ляжет в ./data рядом с кодом.
 """
 import os
+import secrets
 import sqlite3
 from pathlib import Path
+from typing import NamedTuple
 
 DATA_DIR = Path(os.getenv("DATA_DIR") or ("/data" if Path("/data").is_dir() else "data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -22,9 +24,72 @@ _db.executescript(
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS banned (user_id INTEGER PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS collections (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS guest_collections (
+        user_id INTEGER PRIMARY KEY,
+        collection_id TEXT NOT NULL
+    );
     """
 )
+# Existing bots keep their reply routes when the template is updated.
+if "collection_id" not in {row[1] for row in _db.execute("PRAGMA table_info(questions)")}:
+    _db.execute("ALTER TABLE questions ADD COLUMN collection_id TEXT")
+_db.execute("CREATE INDEX IF NOT EXISTS questions_collection ON questions (collection_id)")
 _db.commit()
+
+MAX_COLLECTION_TITLE = 100
+
+
+class Collection(NamedTuple):
+    id: str
+    title: str
+
+
+def create_collection(title: str) -> Collection:
+    title = " ".join(title.split())
+    if not title or len(title) > MAX_COLLECTION_TITLE:
+        raise ValueError(f"Название должно содержать от 1 до {MAX_COLLECTION_TITLE} символов.")
+    collection = Collection(secrets.token_urlsafe(9), title)
+    _db.execute("INSERT INTO collections (id, title) VALUES (?, ?)", collection)
+    _db.commit()
+    return collection
+
+
+def collection_by_id(collection_id: str) -> Collection | None:
+    row = _db.execute("SELECT id, title FROM collections WHERE id = ?", (collection_id,)).fetchone()
+    return Collection(*row) if row else None
+
+
+def collections_page(offset: int, limit: int) -> list[Collection]:
+    rows = _db.execute(
+        "SELECT id, title FROM collections ORDER BY rowid DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    return [Collection(*row) for row in rows]
+
+
+def select_collection(user_id: int, collection_id: str | None) -> None:
+    if collection_id is None:
+        _db.execute("DELETE FROM guest_collections WHERE user_id = ?", (user_id,))
+    else:
+        _db.execute(
+            "INSERT OR REPLACE INTO guest_collections (user_id, collection_id) VALUES (?, ?)",
+            (user_id, collection_id),
+        )
+    _db.commit()
+
+
+def selected_collection(user_id: int) -> Collection | None:
+    row = _db.execute(
+        "SELECT c.id, c.title FROM collections c "
+        "JOIN guest_collections g ON g.collection_id = c.id WHERE g.user_id = ?",
+        (user_id,),
+    ).fetchone()
+    return Collection(*row) if row else None
 
 
 def get(key: str) -> str | None:
@@ -56,8 +121,11 @@ def owner_id() -> int | None:
     return int(value) if value else None
 
 
-def remember_question(owner_message_id: int, user_id: int) -> None:
-    _db.execute("INSERT OR REPLACE INTO questions (owner_message_id, user_id) VALUES (?, ?)", (owner_message_id, user_id))
+def remember_question(owner_message_id: int, user_id: int, collection_id: str | None = None) -> None:
+    _db.execute(
+        "INSERT OR REPLACE INTO questions (owner_message_id, user_id, collection_id) VALUES (?, ?, ?)",
+        (owner_message_id, user_id, collection_id),
+    )
     _db.commit()
 
 
@@ -81,5 +149,7 @@ def is_banned(user_id: int) -> bool:
     return _db.execute("SELECT 1 FROM banned WHERE user_id = ?", (user_id,)).fetchone() is not None
 
 
-def question_count() -> int:
+def question_count(collection_id: str | None = None) -> int:
+    if collection_id is not None:
+        return _db.execute("SELECT COUNT(*) FROM questions WHERE collection_id = ?", (collection_id,)).fetchone()[0]
     return _db.execute("SELECT COUNT(*) FROM questions").fetchone()[0]
